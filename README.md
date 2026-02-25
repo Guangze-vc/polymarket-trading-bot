@@ -75,6 +75,32 @@ python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 3. When probability drops by 0.30+ in 10 seconds, buy the crashed side
 4. Exit at +$0.10 (take profit) or -$0.05 (stop loss)
 
+### Time Momentum Strategy
+
+Executes trades in the final moments of a 5-minute or 15-minute market when the price is within a specific high-probability range.
+
+```bash
+# Run on BTC 5-minute market with default settings (10 USDC at 30s left, price 0.90-0.98)
+python apps/run_time_momentum.py --market btc-updown-5m
+
+# Custom settings for ETH 15-minute market
+python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 --min 0.85 --max 0.95
+
+# Available options
+--market    Market to trade (btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m)
+--amount    Trade size in USDC (default: 10.0)
+--time      Time threshold in seconds remaining (default: 30)
+--min       Minimum price (probability) to trigger trade (default: 0.90)
+--max       Maximum price (probability) to trigger trade (default: 0.98)
+```
+
+**Strategy Logic:**
+1. Tracks the active specified market (e.g., BTC 5-minute up/down)
+2. Monitors the time remaining until resolution
+3. When the time remaining drops below the `--time` threshold (e.g., < 30 seconds):
+4. Checks if the highest probability outcome is between `--min` and `--max` (e.g., 90% to 98%)
+5. If conditions are met, places a trade on the winning side to capture the final momentum
+
 ## Strategy Development Guide
 
 - See `docs/strategy_guide.md` for a step-by-step tutorial and templates.

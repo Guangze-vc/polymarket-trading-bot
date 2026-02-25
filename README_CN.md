@@ -75,6 +75,32 @@ python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 3. 当概率在10秒内下跌0.30+时，买入崩盘的一方
 4. 在 +$0.10（止盈）或 -$0.05（止损）时退出
 
+### 时间动量策略 (Time Momentum Strategy)
+
+在5分钟或15分钟市场的最后时刻，当价格处于特定的高概率区间时执行交易。
+
+```bash
+# 在 BTC 5分钟市场使用默认设置运行（剩30秒时，价格在0.90-0.98之间交易10 USDC）
+python apps/run_time_momentum.py --market btc-updown-5m
+
+# ETH 15分钟市场的自定义设置
+python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 --min 0.85 --max 0.95
+
+# 可用选项
+--market    交易市场 (btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m)
+--amount    单笔交易金额(USDC)（默认：10.0）
+--time      触发交易的时间阈值(秒)（默认：30）
+--min       触发交易的最低概率价格（默认：0.90）
+--max       触发交易的最高概率价格（默认：0.98）
+```
+
+**策略逻辑：**
+1. 追踪指定的活跃市场（如 BTC 5分钟涨跌）
+2. 监控距离市场结算的剩余时间
+3. 当剩余时间低于 `--time` 阈值时（例如：< 30 秒）：
+4. 检查最高概率结果是否在 `--min` 和 `--max` 之间（例如：90% 到 98%）
+5. 如果满足条件，在领先的一方下单，捕捉最后的动量趋势
+
 ## 策略开发指南
 
 - 详见 `docs/strategy_guide_CN.md`（入门到可运行的完整步骤）
