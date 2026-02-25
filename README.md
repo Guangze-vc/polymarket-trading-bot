@@ -42,12 +42,34 @@ export POLY_SAFE_ADDRESS=0xYourPolymarketSafeAddress
 python examples/quickstart.py
 
 # Or run the Flash Crash Strategy
-python apps/run_flash_crash.py --coin BTC
+python strategies/flash_crash_strategy.py --coin BTC
 ```
 
 That's it! You're ready to trade.
 
 ## Trading Strategies
+
+### Time Momentum Strategy
+
+Monitors 5-minute and 15-minute Up/Down markets based on time remaining and execution price logic.
+
+```bash
+# Run with ETH 15-minute market, $1 trade size, <10s threshold, and price between 0.85 and 0.95
+python apps/run_time_momentum.py --market eth-updown-15m --amount 1 --time 10 --min 0.85 --max 0.95
+
+# Available options
+--market      btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m (default: btc-updown-5m)
+--amount      Trade size in USDC (default: 10.0)
+--time        Time threshold in seconds to trigger trade (default: 30)
+--min         Minimum price to trigger trade (default: 0.90)
+--max         Maximum price to trigger trade (default: 0.98)
+```
+
+**Strategy Logic:**
+1. Auto-discover current 5m/15m market
+2. Monitor remaining time and outcome prices
+3. Trigger condition: Remaining time < threshold AND price is between min/max
+4. Execute BUY order on the triggered outcome
 
 ### Flash Crash Strategy
 
@@ -55,10 +77,10 @@ Monitors 15-minute Up/Down markets for sudden probability drops and executes tra
 
 ```bash
 # Run with default settings (0.30 drop threshold)
-python apps/run_flash_crash.py --coin BTC
+python strategies/flash_crash_strategy.py --coin BTC
 
 # Custom settings
-python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
+python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
 
 # Available options
 --coin      BTC, ETH, SOL, XRP (default: ETH)
@@ -75,32 +97,6 @@ python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 3. When probability drops by 0.30+ in 10 seconds, buy the crashed side
 4. Exit at +$0.10 (take profit) or -$0.05 (stop loss)
 
-### Time Momentum Strategy
-
-Executes trades in the final moments of a 5-minute or 15-minute market when the price is within a specific high-probability range.
-
-```bash
-# Run on BTC 5-minute market with default settings (10 USDC at 30s left, price 0.90-0.98)
-python apps/run_time_momentum.py --market btc-updown-5m
-
-# Custom settings for ETH 15-minute market
-python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 --min 0.85 --max 0.95
-
-# Available options
---market    Market to trade (btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m)
---amount    Trade size in USDC (default: 10.0)
---time      Time threshold in seconds remaining (default: 30)
---min       Minimum price (probability) to trigger trade (default: 0.90)
---max       Maximum price (probability) to trigger trade (default: 0.98)
-```
-
-**Strategy Logic:**
-1. Tracks the active specified market (e.g., BTC 5-minute up/down)
-2. Monitors the time remaining until resolution
-3. When the time remaining drops below the `--time` threshold (e.g., < 30 seconds):
-4. Checks if the highest probability outcome is between `--min` and `--max` (e.g., 90% to 98%)
-5. If conditions are met, places a trade on the winning side to capture the final momentum
-
 ## Strategy Development Guide
 
 - See `docs/strategy_guide.md` for a step-by-step tutorial and templates.
@@ -110,7 +106,7 @@ python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 -
 View live orderbook data in a beautiful terminal interface:
 
 ```bash
-python apps/orderbook_tui.py --coin BTC --levels 5
+python strategies/orderbook_tui.py --coin BTC --levels 5
 ```
 
 ## Code Examples
@@ -224,22 +220,9 @@ polymarket-trading-bot/
 │   ├── gamma_client.py      # 15-minute market discovery
 │   └── websocket_client.py  # Real-time WebSocket client
 │
-├── lib/                      # Additional core services
-│   ├── market_manager.py    # Market state management
-│   ├── market_scanner.py    # Discover new markets
-│   ├── position_manager.py  # Position management
-│   ├── price_tracker.py     # Price tracking
-│   └── console.py           # Console utilities
-│
-├── apps/                     # Executable applications
-│   ├── run_flash_crash.py   # Run Flash Crash Strategy
-│   ├── run_time_momentum.py # Run Time Momentum Strategy
+├── strategies/               # Trading strategies
+│   ├── flash_crash_strategy.py  # Volatility trading strategy
 │   └── orderbook_tui.py     # Real-time orderbook display
-│
-├── strategies/               # Trading strategies implementations
-│   ├── base.py              # Base strategy class
-│   ├── flash_crash.py       # Volatility trading strategy
-│   └── time_momentum.py     # Time Momentum strategy
 │
 ├── examples/                 # Example code
 │   ├── quickstart.py        # Start here!
@@ -249,7 +232,6 @@ polymarket-trading-bot/
 ├── scripts/                  # Utility scripts
 │   ├── setup.py             # Interactive setup
 │   ├── run_bot.py           # Run the bot
-│   ├── claim_looper.py      # Automated claim script
 │   └── full_test.py         # Integration tests
 │
 └── tests/                    # Unit tests

@@ -42,12 +42,34 @@ export POLY_SAFE_ADDRESS=0x你的Polymarket钱包地址
 python examples/quickstart.py
 
 # 或运行闪崩策略
-python apps/run_flash_crash.py --coin BTC
+python strategies/flash_crash_strategy.py --coin BTC
 ```
 
 就这么简单！你已经准备好开始交易了。
 
 ## 交易策略
+
+### 时间动量策略 (Time Momentum Strategy)
+
+监控 5 分钟和 15 分钟涨跌市场，基于剩余时间和执行价格逻辑触发交易。
+
+```bash
+# 使用 ETH 15分钟市场运行，$1 交易金额，<10秒 阈值，价格在 0.85 到 0.95 之间
+python apps/run_time_momentum.py --market eth-updown-15m --amount 1 --time 10 --min 0.85 --max 0.95
+
+# 可用选项
+--market      btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m（默认：btc-updown-5m）
+--amount      交易金额，USDC（默认：10.0）
+--time        触发交易的时间阈值，秒（默认：30）
+--min         触发交易的最低价格（默认：0.90）
+--max         触发交易的最高价格（默认：0.98）
+```
+
+**策略逻辑：**
+1. 自动发现当前 5分钟/15分钟 市场
+2. 监控剩余时间和结果价格
+3. 触发条件：剩余时间 < 阈值 且 价格在 min/max 之间
+4. 在触发的结果上执行买入 (BUY) 订单
 
 ### 闪崩策略 (Flash Crash Strategy)
 
@@ -55,10 +77,10 @@ python apps/run_flash_crash.py --coin BTC
 
 ```bash
 # 使用默认设置运行（0.30 下跌阈值）
-python apps/run_flash_crash.py --coin BTC
+python strategies/flash_crash_strategy.py --coin BTC
 
 # 自定义设置
-python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
+python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
 
 # 可用选项
 --coin      BTC, ETH, SOL, XRP（默认：ETH）
@@ -75,32 +97,6 @@ python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 3. 当概率在10秒内下跌0.30+时，买入崩盘的一方
 4. 在 +$0.10（止盈）或 -$0.05（止损）时退出
 
-### 时间动量策略 (Time Momentum Strategy)
-
-在5分钟或15分钟市场的最后时刻，当价格处于特定的高概率区间时执行交易。
-
-```bash
-# 在 BTC 5分钟市场使用默认设置运行（剩30秒时，价格在0.90-0.98之间交易10 USDC）
-python apps/run_time_momentum.py --market btc-updown-5m
-
-# ETH 15分钟市场的自定义设置
-python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 --min 0.85 --max 0.95
-
-# 可用选项
---market    交易市场 (btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m)
---amount    单笔交易金额(USDC)（默认：10.0）
---time      触发交易的时间阈值(秒)（默认：30）
---min       触发交易的最低概率价格（默认：0.90）
---max       触发交易的最高概率价格（默认：0.98）
-```
-
-**策略逻辑：**
-1. 追踪指定的活跃市场（如 BTC 5分钟涨跌）
-2. 监控距离市场结算的剩余时间
-3. 当剩余时间低于 `--time` 阈值时（例如：< 30 秒）：
-4. 检查最高概率结果是否在 `--min` 和 `--max` 之间（例如：90% 到 98%）
-5. 如果满足条件，在领先的一方下单，捕捉最后的动量趋势
-
 ## 策略开发指南
 
 - 详见 `docs/strategy_guide_CN.md`（入门到可运行的完整步骤）
@@ -110,7 +106,7 @@ python apps/run_time_momentum.py --market eth-updown-15m --amount 50 --time 45 -
 在终端中查看实时订单簿数据：
 
 ```bash
-python apps/orderbook_tui.py --coin BTC --levels 5
+python strategies/orderbook_tui.py --coin BTC --levels 5
 ```
 
 ## 代码示例
@@ -224,22 +220,9 @@ polymarket-trading-bot/
 │   ├── gamma_client.py      # 15分钟市场发现
 │   └── websocket_client.py  # 实时 WebSocket 客户端
 │
-├── lib/                      # 附加核心服务
-│   ├── market_manager.py    # 市场状态管理
-│   ├── market_scanner.py    # 市场扫描与发现
-│   ├── position_manager.py  # 仓位管理
-│   ├── price_tracker.py     # 价格追踪
-│   └── console.py           # 命令行工具
-│
-├── apps/                     # 可执行应用
-│   ├── run_flash_crash.py   # 运行闪崩策略
-│   ├── run_time_momentum.py # 运行时间动量策略
+├── strategies/               # 交易策略
+│   ├── flash_crash_strategy.py  # 波动率交易策略
 │   └── orderbook_tui.py     # 实时订单簿显示
-│
-├── strategies/               # 交易策略实现
-│   ├── base.py              # 策略基类
-│   ├── flash_crash.py       # 闪崩策略逻辑
-│   └── time_momentum.py     # 时间动量策略逻辑
 │
 ├── examples/                 # 示例代码
 │   ├── quickstart.py        # 从这里开始！
@@ -249,7 +232,6 @@ polymarket-trading-bot/
 ├── scripts/                  # 工具脚本
 │   ├── setup.py             # 交互式设置
 │   ├── run_bot.py           # 运行机器人
-│   ├── claim_looper.py      # 自动领取奖励脚本
 │   └── full_test.py         # 集成测试
 │
 └── tests/                    # 单元测试
@@ -374,7 +356,7 @@ pytest tests/ -v --cov=src
 1. 首先阅读 `examples/quickstart.py` - 最简单的示例
 2. 然后看 `examples/basic_trading.py` - 常用操作
 3. 研究 `src/bot.py` - 理解核心类
-4. 运行 `apps/run_flash_crash.py` - 实战策略
+4. 运行 `strategies/flash_crash_strategy.py` - 实战策略
 5. 最后看 `examples/strategy_example.py` - 自定义策略
 
 ## 贡献
