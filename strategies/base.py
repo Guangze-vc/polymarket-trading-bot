@@ -100,6 +100,7 @@ class BaseStrategy(ABC):
         # State
         self.running = False
         self._status_mode = False
+        self._market_just_switched = False
 
         # Logging
         self._log_buffer = LogBuffer(max_size=5)
@@ -201,6 +202,7 @@ class BaseStrategy(ABC):
         def handle_market_change(old_slug: str, new_slug: str):  # pyright: ignore[reportUnusedFunction]
             self.log(f"Market changed: {old_slug} -> {new_slug}", "warning")
             self.prices.clear()
+            self._market_just_switched = True
             self.on_market_change(old_slug, new_slug)
 
         @self.market.on_connect
@@ -239,20 +241,34 @@ class BaseStrategy(ABC):
 
         await self.market.stop()
 
+    async def on_start(self) -> None:
+        """Override in subclass to run logic once after strategy start (e.g. claim rewards)."""
+        pass
+
     async def run(self) -> None:
         """Main strategy loop."""
         try:
             if not await self.start():
-                self.log("Failed to start strategy", "error")
+                self.log(
+                    "Failed to start strategy (no current market or WebSocket setup failed - check logs)",
+                    "error",
+                )
                 return
 
+            await self.on_start()
             self._status_mode = True
 
             while self.running:
-                # Get current prices
+                if self.current_market and self.current_market.has_ended():
+                    await self.on_market_ending(self.current_market.slug)
+                    await self.market.refresh_market()
+                    await self.market.wait_for_data(timeout=5.0)
+                if self._market_just_switched:
+                    self._market_just_switched = False
+                    await self._wait_for_new_market_data(timeout=15.0)
+
                 prices = self._get_current_prices()
 
-                # Call tick handler
                 await self.on_tick(prices)
 
                 # Check position exits
@@ -271,6 +287,15 @@ class BaseStrategy(ABC):
         finally:
             await self.stop()
             self._print_summary()
+
+    async def _wait_for_new_market_data(self, timeout: float = 15.0) -> None:
+        """Wait until at least one orderbook has data or timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.market.get_mid_price("up") > 0 or self.market.get_mid_price("down") > 0:
+                return
+            await asyncio.sleep(0.5)
+        return
 
     def _get_current_prices(self) -> Dict[str, float]:
         """Get current prices from market manager."""
@@ -420,6 +445,10 @@ class BaseStrategy(ABC):
         pass
 
     # Optional hooks (override as needed)
+
+    async def on_market_ending(self, slug: str) -> None:
+        """Called before switching away from a market (e.g. to settle/claim). Override to run claim logic."""
+        pass
 
     def on_market_change(self, old_slug: str, new_slug: str) -> None:
         """Called when market changes."""

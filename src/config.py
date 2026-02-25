@@ -296,6 +296,7 @@ class Config:
         # CLOB config
         clob_host = get_env("CLOB_HOST")
         chain_id = get_env_int("CHAIN_ID", 137)
+        signature_type = get_env_int("SIGNATURE_TYPE", -1)
         if clob_host:
             config.clob = ClobConfig(
                 host=clob_host,
@@ -303,6 +304,8 @@ class Config:
             )
         elif chain_id != 137:
             config.clob.chain_id = chain_id
+        if signature_type in (0, 1, 2):
+            config.clob.signature_type = signature_type
 
         # Other settings
         data_dir = get_env("DATA_DIR")

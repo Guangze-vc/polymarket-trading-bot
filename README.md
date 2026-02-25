@@ -42,7 +42,7 @@ export POLY_SAFE_ADDRESS=0xYourPolymarketSafeAddress
 python examples/quickstart.py
 
 # Or run the Flash Crash Strategy
-python strategies/flash_crash_strategy.py --coin BTC
+python apps/run_flash_crash.py --coin BTC
 ```
 
 That's it! You're ready to trade.
@@ -55,10 +55,10 @@ Monitors 15-minute Up/Down markets for sudden probability drops and executes tra
 
 ```bash
 # Run with default settings (0.30 drop threshold)
-python strategies/flash_crash_strategy.py --coin BTC
+python apps/run_flash_crash.py --coin BTC
 
 # Custom settings
-python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
+python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 
 # Available options
 --coin      BTC, ETH, SOL, XRP (default: ETH)
@@ -84,7 +84,7 @@ python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
 View live orderbook data in a beautiful terminal interface:
 
 ```bash
-python strategies/orderbook_tui.py --coin BTC --levels 5
+python apps/orderbook_tui.py --coin BTC --levels 5
 ```
 
 ## Code Examples
@@ -198,9 +198,22 @@ polymarket-trading-bot/
 │   ├── gamma_client.py      # 15-minute market discovery
 │   └── websocket_client.py  # Real-time WebSocket client
 │
-├── strategies/               # Trading strategies
-│   ├── flash_crash_strategy.py  # Volatility trading strategy
+├── lib/                      # Additional core services
+│   ├── market_manager.py    # Market state management
+│   ├── market_scanner.py    # Discover new markets
+│   ├── position_manager.py  # Position management
+│   ├── price_tracker.py     # Price tracking
+│   └── console.py           # Console utilities
+│
+├── apps/                     # Executable applications
+│   ├── run_flash_crash.py   # Run Flash Crash Strategy
+│   ├── run_time_momentum.py # Run Time Momentum Strategy
 │   └── orderbook_tui.py     # Real-time orderbook display
+│
+├── strategies/               # Trading strategies implementations
+│   ├── base.py              # Base strategy class
+│   ├── flash_crash.py       # Volatility trading strategy
+│   └── time_momentum.py     # Time Momentum strategy
 │
 ├── examples/                 # Example code
 │   ├── quickstart.py        # Start here!
@@ -210,6 +223,7 @@ polymarket-trading-bot/
 ├── scripts/                  # Utility scripts
 │   ├── setup.py             # Interactive setup
 │   ├── run_bot.py           # Run the bot
+│   ├── claim_looper.py      # Automated claim script
 │   └── full_test.py         # Integration tests
 │
 └── tests/                    # Unit tests

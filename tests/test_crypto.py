@@ -105,9 +105,10 @@ class TestKeyManager:
 
             assert os.path.exists(filepath)
 
-            # Verify file permissions are restrictive
-            mode = os.stat(filepath).st_mode & 0o777
-            assert mode == 0o600, "File should have 0o600 permissions"
+            # Verify file permissions are restrictive (Unix only; Windows has different permission model)
+            if sys.platform != "win32":
+                mode = os.stat(filepath).st_mode & 0o777
+                assert mode == 0o600, "File should have 0o600 permissions"
 
             # Load
             manager2 = KeyManager()

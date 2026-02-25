@@ -42,7 +42,7 @@ export POLY_SAFE_ADDRESS=0x你的Polymarket钱包地址
 python examples/quickstart.py
 
 # 或运行闪崩策略
-python strategies/flash_crash_strategy.py --coin BTC
+python apps/run_flash_crash.py --coin BTC
 ```
 
 就这么简单！你已经准备好开始交易了。
@@ -55,10 +55,10 @@ python strategies/flash_crash_strategy.py --coin BTC
 
 ```bash
 # 使用默认设置运行（0.30 下跌阈值）
-python strategies/flash_crash_strategy.py --coin BTC
+python apps/run_flash_crash.py --coin BTC
 
 # 自定义设置
-python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
+python apps/run_flash_crash.py --coin ETH --drop 0.25 --size 10
 
 # 可用选项
 --coin      BTC, ETH, SOL, XRP（默认：ETH）
@@ -84,7 +84,7 @@ python strategies/flash_crash_strategy.py --coin ETH --drop 0.25 --size 10
 在终端中查看实时订单簿数据：
 
 ```bash
-python strategies/orderbook_tui.py --coin BTC --levels 5
+python apps/orderbook_tui.py --coin BTC --levels 5
 ```
 
 ## 代码示例
@@ -198,9 +198,22 @@ polymarket-trading-bot/
 │   ├── gamma_client.py      # 15分钟市场发现
 │   └── websocket_client.py  # 实时 WebSocket 客户端
 │
-├── strategies/               # 交易策略
-│   ├── flash_crash_strategy.py  # 波动率交易策略
+├── lib/                      # 附加核心服务
+│   ├── market_manager.py    # 市场状态管理
+│   ├── market_scanner.py    # 市场扫描与发现
+│   ├── position_manager.py  # 仓位管理
+│   ├── price_tracker.py     # 价格追踪
+│   └── console.py           # 命令行工具
+│
+├── apps/                     # 可执行应用
+│   ├── run_flash_crash.py   # 运行闪崩策略
+│   ├── run_time_momentum.py # 运行时间动量策略
 │   └── orderbook_tui.py     # 实时订单簿显示
+│
+├── strategies/               # 交易策略实现
+│   ├── base.py              # 策略基类
+│   ├── flash_crash.py       # 闪崩策略逻辑
+│   └── time_momentum.py     # 时间动量策略逻辑
 │
 ├── examples/                 # 示例代码
 │   ├── quickstart.py        # 从这里开始！
@@ -210,6 +223,7 @@ polymarket-trading-bot/
 ├── scripts/                  # 工具脚本
 │   ├── setup.py             # 交互式设置
 │   ├── run_bot.py           # 运行机器人
+│   ├── claim_looper.py      # 自动领取奖励脚本
 │   └── full_test.py         # 集成测试
 │
 └── tests/                    # 单元测试
@@ -334,7 +348,7 @@ pytest tests/ -v --cov=src
 1. 首先阅读 `examples/quickstart.py` - 最简单的示例
 2. 然后看 `examples/basic_trading.py` - 常用操作
 3. 研究 `src/bot.py` - 理解核心类
-4. 运行 `strategies/flash_crash_strategy.py` - 实战策略
+4. 运行 `apps/run_flash_crash.py` - 实战策略
 5. 最后看 `examples/strategy_example.py` - 自定义策略
 
 ## 贡献

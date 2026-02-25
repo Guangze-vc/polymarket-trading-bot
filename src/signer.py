@@ -1,53 +1,40 @@
 """
-Signer Module - EIP-712 Order Signing
+Signer Module - EIP-712 Order Signing (STABLE / PRO VERSION)
 
-Provides EIP-712 signature functionality for Polymarket orders
-and authentication messages.
+This version intentionally DOES NOT use py-clob-client.
+It avoids poly_eip712_structs Address incompatibilities.
 
-EIP-712 is a standard for structured data hashing and signing
-that provides better security and user experience than plain
-message signing.
-
-Example:
-    from src.signer import OrderSigner
-
-    signer = OrderSigner(private_key)
-    signature = signer.sign_order(
-        token_id="123...",
-        price=0.65,
-        size=10,
-        side="BUY",
-        maker="0x..."
-    )
+Uses direct EIP-712 encoding with primitive types only.
 """
 
 import time
+import secrets
+from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+
+def _debug_log_path():
+    p = Path(__file__).resolve().parent.parent / ".cursor" / "debug.log"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 from eth_account import Account
-from eth_account.messages import encode_typed_data
+from eth_account.messages import encode_typed_data, encode_defunct
 from eth_utils import to_checksum_address
 
+# =============================================================================
+# Constants
+# =============================================================================
 
-# USDC has 6 decimal places
 USDC_DECIMALS = 6
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
+# =============================================================================
+# Order Dataclass
+# =============================================================================
 
 @dataclass
 class Order:
-    """
-    Represents a Polymarket order.
-
-    Attributes:
-        token_id: The ERC-1155 token ID for the market outcome
-        price: Price per share (0-1, e.g., 0.65 = 65%)
-        size: Number of shares
-        side: Order side ('BUY' or 'SELL')
-        maker: The maker's wallet address (Safe/Proxy)
-        nonce: Unique order nonce (usually timestamp)
-        fee_rate_bps: Fee rate in basis points (usually 0)
-        signature_type: Signature type (2 = Gnosis Safe)
-    """
     token_id: str
     price: float
     size: float
@@ -55,15 +42,18 @@ class Order:
     maker: str
     nonce: Optional[int] = None
     fee_rate_bps: int = 0
-    signature_type: int = 2
+    signature_type: int = 2  # 2 = proxy/safe (gasless)
+    expiration: Optional[int] = None
 
+    # --------------------------------------------------------------------------------
+    # Automatically calculate maker/taker amounts and side enum on init
+    # --------------------------------------------------------------------------------
     def __post_init__(self):
-        """Validate and normalize order parameters."""
         self.side = self.side.upper()
         if self.side not in ("BUY", "SELL"):
             raise ValueError(f"Invalid side: {self.side}")
 
-        if not 0 < self.price <= 1:
+        if not (0 < self.price <= 1):
             raise ValueError(f"Invalid price: {self.price}")
 
         if self.size <= 0:
@@ -72,39 +62,62 @@ class Order:
         if self.nonce is None:
             self.nonce = int(time.time())
 
-        # Convert to integers for blockchain
-        self.maker_amount = str(int(self.size * self.price * 10**USDC_DECIMALS))
-        self.taker_amount = str(int(self.size * 10**USDC_DECIMALS))
-        self.side_value = 0 if self.side == "BUY" else 1
+        # ensure expiration is set and valid
+        if self.expiration is None:
+            # default expire in 24h
+            self.expiration = int(time.time() + 60 * 60 * 24)
 
+        self.maker = to_checksum_address(self.maker)
+
+        # BUY orders pay USDC and receive outcome
+        if self.side == "BUY":
+            self.maker_amount = int(self.size * self.price * 10**USDC_DECIMALS)
+            self.taker_amount = int(self.size * 10**USDC_DECIMALS)
+            # 0 = BUY enum in CLOB API
+            self.side_value = 0
+        else:
+            self.maker_amount = int(self.size * 10**USDC_DECIMALS)
+            self.taker_amount = int(self.size * self.price * 10**USDC_DECIMALS)
+            # 1 = SELL enum in CLOB API
+            self.side_value = 1
+
+# =============================================================================
+# Exceptions
+# =============================================================================
 
 class SignerError(Exception):
-    """Base exception for signer operations."""
     pass
 
+# =============================================================================
+# Order Signer
+# =============================================================================
 
 class OrderSigner:
     """
-    Signs Polymarket orders using EIP-712.
-
-    This signer handles:
-    - Authentication messages (L1)
-    - Order messages (for CLOB submission)
-
-    Attributes:
-        wallet: The Ethereum wallet instance
-        address: The signer's address
-        domain: EIP-712 domain separator
+    Provides:
+    - L1 authentication signing
+    - Order signing for Polymarket CLOB
     """
 
-    # Polymarket CLOB EIP-712 domain
-    DOMAIN = {
+    AUTH_DOMAIN = {
         "name": "ClobAuthDomain",
         "version": "1",
-        "chainId": 137,  # Polygon mainnet
+        "chainId": 137,
     }
 
-    # Order type definition for EIP-712
+    EXCHANGE_DOMAIN_NEG_RISK = {
+        "name": "CTF Exchange",
+        "version": "1",
+        "chainId": 137,
+        "verifyingContract": "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    }
+    EXCHANGE_DOMAIN_REGULAR = {
+        "name": "CTF Exchange",
+        "version": "1",
+        "chainId": 137,
+        "verifyingContract": "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    }
+
     ORDER_TYPES = {
         "Order": [
             {"name": "salt", "type": "uint256"},
@@ -122,72 +135,31 @@ class OrderSigner:
         ]
     }
 
+    # -------------------------------------------------------------------------
+    # INIT
+    # -------------------------------------------------------------------------
     def __init__(self, private_key: str):
-        """
-        Initialize signer with a private key.
-
-        Args:
-            private_key: Private key (with or without 0x prefix)
-
-        Raises:
-            ValueError: If private key is invalid
-        """
         if private_key.startswith("0x"):
             private_key = private_key[2:]
 
         try:
-            self.wallet = Account.from_key(f"0x{private_key}")
+            self.wallet = Account.from_key("0x" + private_key)
         except Exception as e:
             raise ValueError(f"Invalid private key: {e}")
 
-        self.address = self.wallet.address
+        self.address = to_checksum_address(self.wallet.address)
 
-    @classmethod
-    def from_encrypted(
-        cls,
-        encrypted_data: dict,
-        password: str
-    ) -> "OrderSigner":
-        """
-        Create signer from encrypted private key.
-
-        Args:
-            encrypted_data: Encrypted key data
-            password: Decryption password
-
-        Returns:
-            Configured OrderSigner instance
-
-        Raises:
-            InvalidPasswordError: If password is incorrect
-        """
-        from .crypto import KeyManager, InvalidPasswordError
-
-        manager = KeyManager()
-        private_key = manager.decrypt(encrypted_data, password)
-        return cls(private_key)
-
+    # -------------------------------------------------------------------------
+    # L1 AUTH
+    # -------------------------------------------------------------------------
     def sign_auth_message(
         self,
         timestamp: Optional[str] = None,
         nonce: int = 0
     ) -> str:
-        """
-        Sign an authentication message for L1 authentication.
-
-        This signature is used to create or derive API credentials.
-
-        Args:
-            timestamp: Message timestamp (defaults to current time)
-            nonce: Message nonce (usually 0)
-
-        Returns:
-            Hex-encoded signature
-        """
         if timestamp is None:
             timestamp = str(int(time.time()))
 
-        # Auth message types
         auth_types = {
             "ClobAuth": [
                 {"name": "address", "type": "address"},
@@ -205,64 +177,72 @@ class OrderSigner:
         }
 
         signable = encode_typed_data(
-            domain_data=self.DOMAIN,
+            domain_data=self.AUTH_DOMAIN,
             message_types=auth_types,
-            message_data=message_data
+            message_data=message_data,
         )
 
         signed = self.wallet.sign_message(signable)
         return "0x" + signed.signature.hex()
 
-    def sign_order(self, order: Order) -> Dict[str, Any]:
-        """
-        Sign a Polymarket order.
+    # -------------------------------------------------------------------------
+    # ORDER SIGNING
+    # -------------------------------------------------------------------------
+    def sign_order(
+        self,
+        order: Order,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
 
-        Args:
-            order: Order instance to sign
-
-        Returns:
-            Dictionary containing order and signature
-
-        Raises:
-            SignerError: If signing fails
-        """
         try:
-            # Build order message for EIP-712
-            order_message = {
-                "salt": 0,
-                "maker": to_checksum_address(order.maker),
+            # #region agent log
+            _opt = options or {}
+            _neg = _opt.get("neg_risk", False)
+            _use_neg = bool(_neg)
+            _domain = self.EXCHANGE_DOMAIN_NEG_RISK if _use_neg else self.EXCHANGE_DOMAIN_REGULAR
+            _vc = _domain.get("verifyingContract", "")
+            _debug_log_path().open("a").write(
+                __import__("json").dumps({"id": "sign_order_enter", "timestamp": int(__import__("time").time() * 1000), "location": "signer.py:sign_order", "message": "sign_order options and domain", "data": {"neg_risk": _neg, "verifyingContract": _vc, "maker": order.maker, "signer": self.address}, "runId": "debug", "hypothesisId": "H1_H3"}) + "\n"
+            )
+            # #endregion
+            message = {
+                "salt": secrets.randbits(256),
+                "maker": order.maker,
                 "signer": self.address,
-                "taker": "0x0000000000000000000000000000000000000000",
+                "taker": ZERO_ADDRESS,
                 "tokenId": int(order.token_id),
                 "makerAmount": int(order.maker_amount),
                 "takerAmount": int(order.taker_amount),
-                "expiration": 0,
-                "nonce": order.nonce,
-                "feeRateBps": order.fee_rate_bps,
-                "side": order.side_value,
-                "signatureType": order.signature_type,
+                "expiration": int(order.expiration),
+                "nonce": int(order.nonce),
+                "feeRateBps": int(order.fee_rate_bps),
+                "side": int(order.side_value),
+                "signatureType": int(order.signature_type),
             }
 
-            # Sign the order using new API format
+            # #region agent log
+            _debug_log_path().open("a").write(
+                __import__("json").dumps({"id": "sign_order_message_types", "timestamp": int(__import__("time").time() * 1000), "location": "signer.py:sign_order", "message": "order message value types", "data": {k: type(v).__name__ for k, v in message.items()}, "runId": "debug", "hypothesisId": "H2"}) + "\n"
+            )
+            # #endregion
+
+            # build typed data for EIP-712 (domain by neg_risk)
             signable = encode_typed_data(
-                domain_data=self.DOMAIN,
+                domain_data=_domain,
                 message_types=self.ORDER_TYPES,
-                message_data=order_message
+                message_data=message,
             )
 
             signed = self.wallet.sign_message(signable)
 
+            out_order = {k: str(v) for k, v in message.items()}
+            # #region agent log
+            _debug_log_path().open("a").write(
+                __import__("json").dumps({"id": "sign_order_return_types", "timestamp": int(__import__("time").time() * 1000), "location": "signer.py:sign_order", "message": "returned order value types", "data": {k: type(v).__name__ for k, v in out_order.items()}, "runId": "debug", "hypothesisId": "H2"}) + "\n"
+            )
+            # #endregion
             return {
-                "order": {
-                    "tokenId": order.token_id,
-                    "price": order.price,
-                    "size": order.size,
-                    "side": order.side,
-                    "maker": order.maker,
-                    "nonce": order.nonce,
-                    "feeRateBps": order.fee_rate_bps,
-                    "signatureType": order.signature_type,
-                },
+                "order": out_order,
                 "signature": "0x" + signed.signature.hex(),
                 "signer": self.address,
             }
@@ -270,6 +250,9 @@ class OrderSigner:
         except Exception as e:
             raise SignerError(f"Failed to sign order: {e}")
 
+    # -------------------------------------------------------------------------
+    # HELPER
+    # -------------------------------------------------------------------------
     def sign_order_dict(
         self,
         token_id: str,
@@ -278,23 +261,9 @@ class OrderSigner:
         side: str,
         maker: str,
         nonce: Optional[int] = None,
-        fee_rate_bps: int = 0
+        fee_rate_bps: int = 0,
+        expiration: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Sign an order from dictionary parameters.
-
-        Args:
-            token_id: Market token ID
-            price: Price per share
-            size: Number of shares
-            side: 'BUY' or 'SELL'
-            maker: Maker's wallet address
-            nonce: Order nonce (defaults to timestamp)
-            fee_rate_bps: Fee rate in basis points
-
-        Returns:
-            Dictionary containing order and signature
-        """
         order = Order(
             token_id=token_id,
             price=price,
@@ -303,25 +272,15 @@ class OrderSigner:
             maker=maker,
             nonce=nonce,
             fee_rate_bps=fee_rate_bps,
+            signature_type=2,
+            expiration=expiration,
         )
         return self.sign_order(order)
 
     def sign_message(self, message: str) -> str:
-        """
-        Sign a plain text message (for API key derivation).
-
-        Args:
-            message: Plain text message to sign
-
-        Returns:
-            Hex-encoded signature
-        """
-        from eth_account.messages import encode_defunct
-
         signable = encode_defunct(text=message)
         signed = self.wallet.sign_message(signable)
         return "0x" + signed.signature.hex()
 
-
-# Alias for backwards compatibility
+# alias
 WalletSigner = OrderSigner

@@ -31,12 +31,15 @@ Usage:
 """
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional, Dict, Callable, List, Union, Awaitable
 
 from src.gamma_client import GammaClient
+
+logger = logging.getLogger(__name__)
 from src.websocket_client import MarketWebSocket, OrderbookSnapshot
 
 
@@ -132,6 +135,10 @@ class MarketInfo:
 # Callback type aliases
 BookCallback = Callable[[OrderbookSnapshot], Union[None, Awaitable[None]]]
 MarketChangeCallback = Callable[[str, str], None]  # (old_slug, new_slug)
+BeforeSwitchCallback = Callable[
+    [Optional["MarketInfo"], "MarketInfo"],
+    Awaitable[None],
+]  # (old_market, new_market) - run before switching so strategy can claim
 ConnectionCallback = Callable[[], None]
 
 
@@ -149,6 +156,7 @@ class MarketManager:
     def __init__(
         self,
         coin: str = "BTC",
+        duration: int = 15,
         market_check_interval: float = 30.0,
         auto_switch_market: bool = True,
     ):
@@ -157,10 +165,12 @@ class MarketManager:
 
         Args:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
+            duration: Market duration in minutes (5 or 15)
             market_check_interval: Seconds between market checks
             auto_switch_market: Auto switch when market changes
         """
         self.coin = coin.upper()
+        self.duration = duration
         self.market_check_interval = market_check_interval
         self.auto_switch_market = auto_switch_market
 
@@ -175,10 +185,12 @@ class MarketManager:
         self._ws_connected = False
         self._ws_task: Optional[asyncio.Task] = None
         self._market_check_task: Optional[asyncio.Task] = None
+        self._switch_lock = asyncio.Lock()
 
         # Callbacks
         self._on_book_callbacks: List[BookCallback] = []
         self._on_market_change_callbacks: List[MarketChangeCallback] = []
+        self._on_before_market_switch_callbacks: List[BeforeSwitchCallback] = []
         self._on_connect_callbacks: List[ConnectionCallback] = []
         self._on_disconnect_callbacks: List[ConnectionCallback] = []
 
@@ -249,6 +261,13 @@ class MarketManager:
         self._on_market_change_callbacks.append(callback)
         return callback
 
+    def on_before_market_switch(
+        self, callback: BeforeSwitchCallback
+    ) -> BeforeSwitchCallback:
+        """Register callback run before switching market (e.g. settle/claim). Awaited before subscribe."""
+        self._on_before_market_switch_callbacks.append(callback)
+        return callback
+
     def on_connect(self, callback: ConnectionCallback) -> ConnectionCallback:
         """Register connect callback."""
         self._on_connect_callbacks.append(callback)
@@ -296,7 +315,12 @@ class MarketManager:
         Returns:
             MarketInfo if found, None otherwise
         """
-        market_data = self.gamma.get_market_info(self.coin)
+        if self.duration == 5:
+            market_data = self.gamma.get_current_5m_market(self.coin)
+        elif self.duration == 15:
+            market_data = self.gamma.get_market_info(self.coin)
+        else:
+            market_data = self.gamma.get_market_info(self.coin)
 
         if not market_data:
             return None
@@ -366,6 +390,33 @@ class MarketManager:
         if self.ws:
             await self.ws.run(auto_reconnect=True)
 
+    async def _recreate_websocket_for_new_market(self, new_market: MarketInfo) -> None:
+        """
+        Disconnect current WebSocket, update market, create new client and reconnect.
+        Ensures a clean connection and subscription for the new market.
+        """
+        if self._ws_task:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+            self._ws_task = None
+        if self.ws:
+            await self.ws.disconnect()
+            self.ws = None
+        self._ws_connected = False
+
+        self._update_current_market(new_market)
+        if not await self._setup_websocket():
+            return
+        self._ws_task = asyncio.create_task(self._run_websocket())
+
+    async def _recreate_websocket_for_new_market_locked(self, new_market: MarketInfo) -> None:
+        """Locked version of recreate websocket to prevent concurrency issues."""
+        async with self._switch_lock:
+            await self._recreate_websocket_for_new_market(new_market)
+
     async def _market_check_loop(self) -> None:
         """Periodically check for market changes."""
         while self._running:
@@ -397,11 +448,14 @@ class MarketManager:
             if not self._should_switch_market(old_market, market):
                 continue
 
-            # Market changed - resubscribe to new tokens
-            await self.ws.subscribe(list(new_tokens), replace=True)
-            self._update_current_market(market)
+            for cb in self._on_before_market_switch_callbacks:
+                try:
+                    await cb(old_market, market)
+                except Exception:
+                    pass
 
-            # Fire market change callbacks in main thread
+            await self._recreate_websocket_for_new_market_locked(market)
+
             if old_slug and old_slug != market.slug:
                 for callback in self._on_market_change_callbacks:
                     try:
@@ -420,11 +474,17 @@ class MarketManager:
 
         # Discover initial market
         if not self.discover_market():
+            logger.warning(
+                "No current market found for %s %sm (API returned none or market not accepting orders)",
+                self.coin,
+                self.duration,
+            )
             self._running = False
             return False
 
         # Setup WebSocket
         if not await self._setup_websocket():
+            logger.warning("WebSocket setup failed for %s %sm", self.coin, self.duration)
             self._running = False
             return False
 
@@ -484,14 +544,15 @@ class MarketManager:
     async def refresh_market(self) -> Optional[MarketInfo]:
         """
         Force refresh market discovery and resubscribe.
+        Fires market change callbacks when switching to a new market.
 
         Returns:
             New MarketInfo if found
         """
         old_market = self.current_market
         old_tokens = set(old_market.token_ids.values()) if old_market else set()
+        old_slug = old_market.slug if old_market else None
 
-        # Run synchronous HTTP call in thread pool to avoid blocking
         market = await asyncio.to_thread(self.discover_market, update_state=False)
 
         if not market:
@@ -505,8 +566,18 @@ class MarketManager:
         if not self._should_switch_market(old_market, market):
             return old_market
 
-        if self.ws:
-            await self.ws.subscribe(list(new_tokens), replace=True)
+        for cb in self._on_before_market_switch_callbacks:
+            try:
+                await cb(old_market, market)
+            except Exception:
+                pass
 
-        self._update_current_market(market)
+        await self._recreate_websocket_for_new_market_locked(market)
+
+        if old_slug and old_slug != market.slug:
+            for callback in self._on_market_change_callbacks:
+                try:
+                    callback(old_slug, market.slug)
+                except Exception:
+                    pass
         return market

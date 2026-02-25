@@ -46,6 +46,7 @@ class Position:
     size: float
     entry_time: float
     order_id: Optional[str] = None
+    market_slug: Optional[str] = None  # slug of market this position belongs to (for claim after resolve)
 
     # TP/SL config (set by PositionManager)
     take_profit_delta: float = 0.10
@@ -140,6 +141,7 @@ class PositionManager:
         entry_price: float,
         size: float,
         order_id: Optional[str] = None,
+        market_slug: Optional[str] = None,
     ) -> Optional[Position]:
         """
         Open a new position.
@@ -150,6 +152,7 @@ class PositionManager:
             entry_price: Entry price
             size: Position size
             order_id: Optional order ID
+            market_slug: Optional market slug (for claim after resolution)
 
         Returns:
             Position if opened, None if at max positions
@@ -171,6 +174,7 @@ class PositionManager:
             size=size,
             entry_time=time.time(),
             order_id=order_id,
+            market_slug=market_slug,
             take_profit_delta=self.take_profit,
             stop_loss_delta=self.stop_loss,
         )
@@ -227,6 +231,10 @@ class PositionManager:
     def get_all_positions(self) -> List[Position]:
         """Get all open positions."""
         return list(self._positions.values())
+
+    def get_positions_by_market(self, market_slug: str) -> List[Position]:
+        """Get open positions that belong to the given market slug."""
+        return [p for p in self._positions.values() if p.market_slug == market_slug]
 
     def has_position(self, side: str) -> bool:
         """Check if there's a position on a side."""

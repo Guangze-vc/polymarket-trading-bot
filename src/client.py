@@ -148,21 +148,42 @@ class ApiClient(ThreadLocalSessionMixin):
                         params=params, timeout=self.timeout
                     )
                 elif method.upper() == "POST":
-                    response = session.post(
-                        url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
-                    )
+                    if isinstance(data, str):
+                        response = session.post(
+                            url, headers=request_headers,
+                            data=data, params=params, timeout=self.timeout
+                        )
+                    else:
+                        response = session.post(
+                            url, headers=request_headers,
+                            json=data, params=params, timeout=self.timeout
+                        )
                 elif method.upper() == "DELETE":
-                    response = session.delete(
-                        url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
-                    )
+                    if isinstance(data, str):
+                        response = session.delete(
+                            url, headers=request_headers,
+                            data=data, params=params, timeout=self.timeout
+                        )
+                    else:
+                        response = session.delete(
+                            url, headers=request_headers,
+                            json=data, params=params, timeout=self.timeout
+                        )
                 else:
                     raise ApiError(f"Unsupported method: {method}")
 
-                response.raise_for_status()
-                return response.json() if response.text else {}
-
+                try:
+                    response.raise_for_status()
+                    return response.json() if response.text else {}
+                except requests.exceptions.HTTPError as e:
+                     # Include response body in error message
+                    error_msg = f"{e}\nResponse: {response.text}"
+                    if method.upper() in ["POST", "DELETE"]:
+                         print(f"DEBUG ERROR BODY: {data}")
+                         print(f"FULL RESPONSE: {response.text}")
+                         error_msg += f"\nRequest Body: {data}"
+                    raise ApiError(error_msg) from e
+                    
             except requests.exceptions.RequestException as e:
                 last_error = e
                 if attempt < self.retry_count - 1:
@@ -198,7 +219,8 @@ class ClobClient(ApiClient):
         funder: str = "",
         api_creds: Optional[ApiCredentials] = None,
         builder_creds: Optional[BuilderConfig] = None,
-        timeout: int = 30
+        timeout: int = 30,
+        auth_address: Optional[str] = None
     ):
         """
         Initialize CLOB client.
@@ -211,6 +233,7 @@ class ClobClient(ApiClient):
             api_creds: User API credentials (optional)
             builder_creds: Builder credentials for attribution (optional)
             timeout: Request timeout
+            auth_address: Address to use for L2/API auth headers (default: funder)
         """
         super().__init__(base_url=host, timeout=timeout)
         self.host = host
@@ -219,6 +242,7 @@ class ClobClient(ApiClient):
         self.funder = funder
         self.api_creds = api_creds
         self.builder_creds = builder_creds
+        self.auth_address = auth_address or funder
 
     def _build_headers(
         self,
@@ -259,7 +283,6 @@ class ClobClient(ApiClient):
                 "POLY_BUILDER_SIGNATURE": signature,
             })
 
-        # User API credentials (L2 authentication)
         if self.api_creds and self.api_creds.is_valid():
             timestamp = str(int(time.time()))
 
@@ -282,7 +305,7 @@ class ClobClient(ApiClient):
                 ).hexdigest()
 
             headers.update({
-                "POLY_ADDRESS": self.funder,
+                "POLY_ADDRESS": self.auth_address,
                 "POLY_API_KEY": self.api_creds.api_key,
                 "POLY_TIMESTAMP": timestamp,
                 "POLY_PASSPHRASE": self.api_creds.passphrase,
@@ -379,6 +402,21 @@ class ClobClient(ApiClient):
     def set_api_creds(self, creds: ApiCredentials) -> None:
         """Set API credentials for authenticated requests."""
         self.api_creds = creds
+
+    def get_market(self, token_id: str) -> Dict[str, Any]:
+        """
+        Get market metadata.
+        
+        Args:
+            token_id: Market token ID
+            
+        Returns:
+            Market metadata
+        """
+        return self._request(
+            "GET",
+            f"/markets/{token_id}"
+        )
 
     def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """
@@ -498,16 +536,24 @@ class ClobClient(ApiClient):
         """
         endpoint = "/order"
 
-        # Build request body
+        api_key = self.api_creds.api_key if self.api_creds else ""
+        order_obj = dict(signed_order.get("order", signed_order))
+        if "signature" in signed_order:
+            order_obj["signature"] = signed_order["signature"]
         body = {
-            "order": signed_order.get("order", signed_order),
-            "owner": self.funder,
+            "order": order_obj,
+            "owner": api_key,
             "orderType": order_type,
         }
 
-        # Add signature
-        if "signature" in signed_order:
-            body["signature"] = signed_order["signature"]
+        # #region agent log
+        _dp = __import__("pathlib").Path(__file__).resolve().parent.parent / ".cursor" / "debug.log"
+        _dp.parent.mkdir(parents=True, exist_ok=True)
+        _ord = body.get("order", {})
+        _dp.open("a").write(
+            json.dumps({"id": "post_order_body", "timestamp": int(time.time() * 1000), "location": "client.py:post_order", "message": "body order field types", "data": {"order_value_types": {k: type(v).__name__ for k, v in _ord.items()}, "has_owner": "owner" in body}, "runId": "debug", "hypothesisId": "H2_H4"}) + "\n"
+        )
+        # #endregion
 
         body_json = json.dumps(body, separators=(',', ':'))
         headers = self._build_headers("POST", endpoint, body_json)
@@ -515,7 +561,7 @@ class ClobClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
+            data=body_json,
             headers=headers
         )
 
@@ -537,7 +583,7 @@ class ClobClient(ApiClient):
         return self._request(
             "DELETE",
             endpoint,
-            data=body,
+            data=body_json,
             headers=headers
         )
 
@@ -558,7 +604,7 @@ class ClobClient(ApiClient):
         return self._request(
             "DELETE",
             endpoint,
-            data=order_ids,
+            data=body_json,
             headers=headers
         )
 
@@ -607,7 +653,7 @@ class ClobClient(ApiClient):
         return self._request(
             "DELETE",
             endpoint,
-            data=body if body else None,
+            data=body_json if body else None,
             headers=headers
         )
 
@@ -694,7 +740,7 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
+            data=body_json,
             headers=headers
         )
 
@@ -727,7 +773,7 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
+            data=body_json,
             headers=headers
         )
 
@@ -763,6 +809,6 @@ class RelayerClient(ApiClient):
         return self._request(
             "POST",
             endpoint,
-            data=body,
+            data=body_json,
             headers=headers
         )

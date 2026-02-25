@@ -215,6 +215,7 @@ class MarketWebSocket:
         # Connection state
         self._ws: Optional["WebSocketClientProtocol"] = None
         self._running = False
+        self._running_task: Optional[asyncio.Task] = None
         self._subscribed_assets: Set[str] = set()
 
         # Orderbook cache
@@ -486,11 +487,28 @@ class MarketWebSocket:
                 )
                 msg_count += 1
 
+                if message is None:
+                    continue
+                if isinstance(message, bytes):
+                    try:
+                        message = message.decode("utf-8")
+                    except Exception:
+                        continue
+                if not isinstance(message, str) or not message.strip():
+                    continue
+                raw = message.strip()
+                if not raw:
+                    continue
+
                 # Log first 5 messages, then every 1000
                 if msg_count <= 5 or msg_count % 1000 == 0:
-                    logger.info(f"WS message #{msg_count}: {message[:200] if len(message) > 200 else message}")
+                    logger.info(f"WS message #{msg_count}: {raw[:200] if len(raw) > 200 else raw}")
 
-                data = json.loads(message)
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.debug("WS non-JSON or empty frame (ignored): %s", raw[:80])
+                    continue
 
                 # Handle array of messages
                 if isinstance(data, list):
@@ -504,10 +522,12 @@ class MarketWebSocket:
             except self._connection_closed as e:
                 logger.warning(f"WebSocket connection closed: {e}")
                 break
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse message: {e}")
             except Exception as e:
-                logger.error(f"Error processing message: {e}")
+                err_msg = str(e)
+                logger.error(f"Error processing message: {err_msg}")
+                if "already running recv" in err_msg:
+                    logger.error("Concurrent recv detected. Breaking loop to recover.")
+                    break
                 if self._on_error:
                     self._on_error(e)
 
@@ -518,7 +538,12 @@ class MarketWebSocket:
         Args:
             auto_reconnect: Whether to automatically reconnect on disconnect
         """
+        if self._running_task and not self._running_task.done():
+            logger.warning("WebSocket.run() called while already running. Skipping.")
+            return
+
         self._running = True
+        self._running_task = asyncio.current_task()
 
         while self._running:
             # Connect

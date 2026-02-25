@@ -35,6 +35,11 @@ class GammaClient(ThreadLocalSessionMixin):
         "SOL": "sol-updown-15m",
         "XRP": "xrp-updown-15m",
     }
+    
+    COIN_SLUGS_5M = {
+        "BTC": "btc-updown-5m",
+        "ETH": "eth-updown-5m",
+    }
 
     def __init__(self, host: str = DEFAULT_HOST, timeout: int = 10):
         """
@@ -59,6 +64,87 @@ class GammaClient(ThreadLocalSessionMixin):
             Market data dictionary or None if not found
         """
         url = f"{self.host}/markets/slug/{slug}"
+
+        try:
+            response = self.session.get(url, timeout=self.timeout)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception:
+            return None
+
+    def list_markets(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        tag_id: Optional[int] = None,
+        closed: bool = False,
+        clob_token_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List markets with optional tag filter and pagination.
+
+        Args:
+            limit: Max number of markets per request
+            offset: Pagination offset
+            tag_id: Optional tag ID to filter by category
+            closed: If True, include closed markets
+            clob_token_ids: Optional list of CLOB token IDs to filter by
+
+        Returns:
+            List of raw market dictionaries from the API
+        """
+        url = f"{self.host}/markets"
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "closed": closed,
+        }
+        if tag_id is not None:
+            params["tag_id"] = tag_id
+        if clob_token_ids:
+            params["clob_token_ids"] = clob_token_ids
+
+        try:
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            if response.status_code == 200:
+                data = response.json()
+                return data if isinstance(data, list) else []
+            return []
+        except Exception:
+            return []
+
+    def get_market_by_token_id(self, token_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get market that contains the given CLOB token ID (for tick_size, neg_risk when CLOB returns 404).
+
+        Args:
+            token_id: CLOB outcome token ID
+
+        Returns:
+            Raw market dict with negRisk/tickSize if available, or None
+        """
+        try:
+            markets = self.list_markets(limit=10, clob_token_ids=[token_id])
+            for m in markets:
+                ids = self._parse_json_field(m.get("clobTokenIds", "[]"))
+                if token_id in (str(i) for i in ids):
+                    return m
+            return markets[0] if markets else None
+        except Exception:
+            return None
+
+    def get_tag_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """
+        Get tag by slug (e.g. politics, sports, crypto).
+
+        Args:
+            slug: Tag slug string
+
+        Returns:
+            Tag dict with id, slug, label, etc., or None if not found
+        """
+        url = f"{self.host}/tags/slug/{slug}"
 
         try:
             response = self.session.get(url, timeout=self.timeout)
@@ -146,6 +232,68 @@ class GammaClient(ThreadLocalSessionMixin):
 
         return self.get_market_by_slug(slug)
 
+    def get_current_5m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the current active 5-minute market for a coin.
+
+        Args:
+            coin: Coin symbol (BTC, ETH)
+
+        Returns:
+            Market data for the current 5-minute window, or None
+        """
+        coin = coin.upper()
+        if coin not in self.COIN_SLUGS_5M:
+             # Fallback or raise? Just return None for now if not supported
+             return None
+
+        prefix = self.COIN_SLUGS_5M[coin]
+
+        # Calculate current 5-minute window timestamp
+        now = datetime.now(timezone.utc)
+        
+        # Round to current 5-minute window (300 seconds)
+        # 5m windows align with 0, 5, 10, ... minutes
+        minute = (now.minute // 5) * 5
+        current_window = now.replace(minute=minute, second=0, microsecond=0)
+        current_ts = int(current_window.timestamp())
+
+        # Try current window
+        slug = f"{prefix}-{current_ts}"
+        market = self.get_market_by_slug(slug)
+        
+        found_market = None
+        if market and market.get("acceptingOrders"):
+            found_market = market
+        else:
+            # Try next window (in case current just ended)
+            next_ts = current_ts + 300  # 5 minutes
+            slug = f"{prefix}-{next_ts}"
+            market = self.get_market_by_slug(slug)
+
+            if market and market.get("acceptingOrders"):
+                found_market = market
+
+        if not found_market:
+            return None
+            
+        # Parse and map to snake_case for MarketManager
+        token_ids = self.parse_token_ids(found_market)
+        prices = self.parse_prices(found_market)
+
+        return {
+            "slug": found_market.get("slug"),
+            "question": found_market.get("question"),
+            "end_date": found_market.get("endDate"),
+            "token_ids": token_ids,
+            "prices": prices,
+            "accepting_orders": found_market.get("acceptingOrders", False),
+            "best_bid": found_market.get("bestBid"),
+            "best_ask": found_market.get("bestAsk"),
+            "spread": found_market.get("spread"),
+            "raw": found_market,
+        }
+
     def parse_token_ids(self, market: Dict[str, Any]) -> Dict[str, str]:
         """
         Parse token IDs from market data.
@@ -201,6 +349,36 @@ class GammaClient(ThreadLocalSessionMixin):
             if i < len(values):
                 result[str(outcome).lower()] = cast(values[i])
         return result
+
+    def get_resolved_winner(self, slug: str) -> Optional[str]:
+        """
+        Get the winning outcome side for a resolved market.
+
+        Args:
+            slug: Market slug (e.g. btc-updown-5m-1771279200)
+
+        Returns:
+            "up" or "down" if market is closed and resolved, None otherwise
+        """
+        market = self.get_market_by_slug(slug)
+        if not market:
+            return None
+        closed = market.get("closed", False)
+        active = market.get("active", True)
+        if not closed and active:
+            return None
+        outcome_prices = market.get("outcomePrices", "[]")
+        prices = self._parse_json_field(outcome_prices)
+        outcomes = market.get("outcomes", '["Up", "Down"]')
+        outcome_list = self._parse_json_field(outcomes)
+        for i, p in enumerate(prices):
+            try:
+                v = float(p) if isinstance(p, str) else p
+            except (TypeError, ValueError):
+                continue
+            if v >= 0.99 and i < len(outcome_list):
+                return str(outcome_list[i]).lower()
+        return None
 
     def get_market_info(self, coin: str) -> Optional[Dict[str, Any]]:
         """
