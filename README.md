@@ -54,8 +54,8 @@ That's it! You're ready to trade.
 Monitors 5-minute and 15-minute Up/Down markets based on time remaining and execution price logic.
 
 ```bash
-# Run with ETH 15-minute market, $1 trade size, <10s threshold, and price between 0.85 and 0.95
-python apps/run_time_momentum.py --market eth-updown-15m --amount 1 --time 10 --min 0.85 --max 0.95
+
+python apps/run_time_momentum.py --market btc-updown-5m --amount 1 --time 10 --min 0.85 --max 0.95
 
 # Available options
 --market      btc-updown-5m, btc-updown-15m, eth-updown-15m, sol-updown-15m, xrp-updown-15m (default: btc-updown-5m)
